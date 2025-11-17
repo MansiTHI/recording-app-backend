@@ -58,7 +58,9 @@ export const sendVerificationEmail = async (email, code, name) => {
 
     const mailOptions = {
       from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
+      port: 587,
       to: email,
+      secure: false,
       subject: "Email Verification - Workstream Automations",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -97,6 +99,7 @@ export const sendVerificationEmail = async (email, code, name) => {
       response: info.response
     };
   } catch (error) {
+    console.log(  'Error details:====== 100', error);
     const errorDetails = {
       message: error.message,
       code: error.code,
