@@ -8,8 +8,8 @@ const createTransporter = () => {
       port: 587,
       secure: false, // true for 465, false for other ports
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD, // Use App Password here
+        user: "riddhi973797@gmail.com",
+        pass: "razqrhkgiazsmibs", // Use App Password here
       },
       tls: {
         rejectUnauthorized: false // Only for development/testing
@@ -58,6 +58,7 @@ export const sendVerificationEmail = async (email, code, name) => {
 
     const mailOptions = {
       from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
+      host: 'smtp.gmail.com',
       port: 587,
       to: email,
       secure: false,
