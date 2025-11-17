@@ -51,7 +51,7 @@ export const registerUser = async (req, res) => {
     if (!emailResult.success)
       return res.status(500).json({
         success: false,
-        message: "User registered but failed to send verification email",
+        message: emailResult.userMessage || "User registered but failed to send verification email",
         error: emailResult.error,
       });
 
