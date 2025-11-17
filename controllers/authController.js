@@ -47,19 +47,13 @@ export const registerUser = async (req, res) => {
     });
 
     //Send OTP email
-    // const emailResult = await sendVerificationEmail(email, code, name);
-    // if (!emailResult.success)
-    //   return res.status(500).json({
-    //     success: false,
-    //     message: "User registered but failed to send verification email",
-    //     error: emailResult.error,
-    //   });
-
-    sendVerificationEmail(email, code, name)
-      .then(() => console.log("Verification email sent"))
-      .catch(err =>
-        console.error("Failed to send verification email:", err.message)
-      );
+    const emailResult = await sendVerificationEmail(email, code, name);
+    if (!emailResult.success)
+      return res.status(500).json({
+        success: false,
+        message: "User registered but failed to send verification email",
+        error: emailResult.error,
+      });
 
     return res.status(201).json({
       success: true,

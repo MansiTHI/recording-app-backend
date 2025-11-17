@@ -1,35 +1,114 @@
 import nodemailer from "nodemailer";
 
-// Create a transporter with more reliable configuration
-const createTransporter = () => {
+// Create a transporter with production-ready configuration and fallback
+const createTransporter = async (useFallback = false) => {
   try {
-    const transporter = nodemailer.createTransport({
+    // Primary configuration for production
+    const primaryConfig = {
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // true for 465, false for other ports
+      port: 465,
+      secure: true,
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD, // Use App Password here
+        pass: process.env.EMAIL_PASSWORD,
       },
+      connectionTimeout: 30000, // Reduced timeout
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
       tls: {
-        rejectUnauthorized: false // Only for development/testing
-      }
-    });
+        rejectUnauthorized: false, // More lenient for production issues
+        minVersion: 'TLSv1.2'
+      },
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 50,
+      rateLimit: 10
+    };
+
+    // Fallback configuration for restrictive environments
+    const fallbackConfig = {
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD,
+      },
+      connectionTimeout: 30000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
+      tls: {
+        rejectUnauthorized: false,
+        ciphers: 'SSLv3'
+      },
+      requireTLS: true
+    };
+
+    // Use fallback config if requested or in development
+    const config = useFallback || process.env.NODE_ENV !== 'production' 
+      ? fallbackConfig 
+      : primaryConfig;
+
+    console.log(`Creating transporter with ${useFallback ? 'fallback' : 'primary'} config (port ${config.port})`);
     
-    // Verify connection configuration
-    transporter.verify(function(error, success) {
-      if (error) {
-        console.error('SMTP Connection Error:', error);
-      } else {
-        console.log('SMTP Server is ready to take our messages');
-      }
-    });
-    
+    const transporter = nodemailer.createTransport(config);
     return transporter;
   } catch (error) {
     console.error('Error creating email transporter:', error);
     throw error;
   }
+};
+
+// Enhanced email sending with automatic fallback
+const sendEmailWithFallback = async (mailOptions, maxRetries = 2) => {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const useFallback = attempt > 0; // Use fallback on retry
+    let transporter;
+    
+    try {
+      transporter = await createTransporter(useFallback);
+      
+      // Try to send the email with timeout
+      const info = await Promise.race([
+        transporter.sendMail(mailOptions),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Email send timeout')), 45000)
+        )
+      ]);
+      
+      console.log(`Email sent successfully on attempt ${attempt + 1}:`, info.messageId);
+      return {
+        success: true,
+        messageId: info.messageId,
+        response: info.response,
+        attempt: attempt + 1
+      };
+      
+    } catch (error) {
+      lastError = error;
+      console.error(`Email attempt ${attempt + 1} failed:`, error.message);
+      
+      // Close transporter if it exists
+      if (transporter) {
+        try {
+          transporter.close();
+        } catch (closeError) {
+          console.warn('Error closing transporter:', closeError.message);
+        }
+      }
+      
+      // If this is not the last attempt, wait before retrying
+      if (attempt < maxRetries - 1) {
+        console.log(`Retrying in 2 seconds... (attempt ${attempt + 2}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+  }
+  
+  // All attempts failed
+  throw lastError;
 };
 
 // Generate a 6-character alphanumeric verification code (mix of numbers and letters)
@@ -51,11 +130,6 @@ export const sendVerificationEmail = async (email, code, name) => {
       throw new Error('Invalid email address format');
     }
 
-    // Create and verify transporter
-    transporter = createTransporter();
-    await transporter.verify();
-    console.log('SMTP server connection verified');
-
     const mailOptions = {
       from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
       to: email,
@@ -68,7 +142,7 @@ export const sendVerificationEmail = async (email, code, name) => {
             <p style="margin: 0; color: #333; font-size: 14px;">Your verification code is:</p>
             <h1 style="color: #4CAF50; font-size: 32px; margin: 10px 0; letter-spacing: 5px;">${code}</h1>
           </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
+          <p style="color: #666; font-size: 14px;">This code will expire in 10 minutes.</p>
           <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request this verification, please ignore this email.</p>
         </div>
       `,
@@ -78,24 +152,16 @@ export const sendVerificationEmail = async (email, code, name) => {
         'X-Auto-Response-Suppress': 'OOF, AutoReply',
       },
       // Add message configuration
-      priority: 'high',
-      dsn: {
-        id: `${Date.now()}`,
-        return: 'headers',
-        notify: ['success', 'failure', 'delay'],
-        recipient: process.env.EMAIL_USER
-      }
+      priority: 'high'
     };
 
     console.log('Sending verification email to:', email);
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully:', info.messageId);
     
-    return { 
-      success: true,
-      messageId: info.messageId,
-      response: info.response
-    };
+    // Use the enhanced fallback mechanism
+    const result = await sendEmailWithFallback(mailOptions);
+    console.log('Email sent successfully:', result.messageId);
+    
+    return result;
   } catch (error) {
     const errorDetails = {
       message: error.message,
