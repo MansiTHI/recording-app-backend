@@ -1,6 +1,9 @@
 import nodemailer from "nodemailer";
+import { google } from 'googleapis';
+import fs from 'fs';
+import path from 'path';
 
-// Create a transporter with more reliable configuration
+// ORIGINAL SMTP CONFIGURATION (Your existing code)
 const createTransporter = () => {
   try {
     const transporter = nodemailer.createTransport({
@@ -8,8 +11,8 @@ const createTransporter = () => {
       port: 587,
       secure: false, // true for 465, false for other ports
       auth: {
-        user: "riddhi973797@gmail.com",
-        pass: "razqrhkgiazsmibs", // Use App Password here
+        user: "usert6487@gmail.com",
+        pass: "xgniasrsruozhzpb", // Use App Password here
       },
       tls: {
         rejectUnauthorized: false // Only for development/testing
@@ -32,6 +35,132 @@ const createTransporter = () => {
   }
 };
 
+// NEW GMAIL API CONFIGURATION (Alternative method)
+const createGmailService = async () => {
+  try {
+    // Load service account credentials
+    const credentialsPath = process.env.GMAIL_CREDENTIALS_PATH || path.join(process.cwd(), 'config', 'gmail-credentials.json');
+    
+    if (!fs.existsSync(credentialsPath)) {
+      console.log('Gmail credentials not found, falling back to SMTP');
+      return null;
+    }
+
+    const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+    
+    // Create JWT client
+    const jwtClient = new google.auth.JWT(
+      credentials.client_email,
+      null,
+      credentials.private_key,
+      ['https://www.googleapis.com/auth/gmail.send'],
+      process.env.GMAIL_IMPERSONATE_EMAIL || credentials.client_email
+    );
+
+    // Authorize the client
+    await jwtClient.authorize();
+    
+    // Create Gmail API service
+    const gmail = google.gmail({ version: 'v1', auth: jwtClient });
+    
+    console.log('Gmail API service initialized successfully');
+    return gmail;
+  } catch (error) {
+    console.error('Error creating Gmail service, falling back to SMTP:', error);
+    return null;
+  }
+};
+
+// Helper function to create email message for Gmail API
+const createEmailMessage = (to, subject, htmlContent, from = null) => {
+  const fromAddress = from || process.env.GMAIL_FROM_EMAIL || process.env.EMAIL_USER || 'noreply@workstreamautomations.com';
+  const fromName = process.env.GMAIL_FROM_NAME || 'Workstream Automations';
+  
+  const message = [
+    `From: "${fromName}" <${fromAddress}>`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    '',
+    htmlContent
+  ].join('\n');
+
+  // Encode message in base64url format
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  return { raw: encodedMessage };
+};
+
+// Send email using Gmail API (with fallback to SMTP)
+const sendEmailWithFallback = async (to, subject, htmlContent, mailOptions = {}) => {
+  // Try Gmail API first if configured
+  if (process.env.GMAIL_CREDENTIALS_PATH || fs.existsSync(path.join(process.cwd(), 'config', 'gmail-credentials.json'))) {
+    try {
+      console.log('Attempting to send via Gmail API...');
+      const gmail = await createGmailService();
+      
+      if (gmail) {
+        const emailMessage = createEmailMessage(to, subject, htmlContent);
+        const result = await gmail.users.messages.send({
+          userId: 'me',
+          requestBody: emailMessage,
+        });
+
+        console.log('Email sent successfully via Gmail API:', result.data.id);
+        return {
+          success: true,
+          messageId: result.data.id,
+          method: 'Gmail API'
+        };
+      }
+    } catch (error) {
+      console.error('Gmail API failed, falling back to SMTP:', error.message);
+    }
+  }
+
+  // Fallback to SMTP (your original method)
+  console.log('Using SMTP fallback...');
+  let transporter;
+  try {
+    transporter = createTransporter();
+    await transporter.verify();
+    
+    const smtpMailOptions = {
+      from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
+      to: to,
+      subject: subject,
+      html: htmlContent,
+      ...mailOptions
+    };
+
+    const info = await transporter.sendMail(smtpMailOptions);
+    console.log('Email sent successfully via SMTP:', info.messageId);
+    
+    return { 
+      success: true,
+      messageId: info.messageId,
+      response: info.response,
+      method: 'SMTP'
+    };
+  } catch (error) {
+    console.error('SMTP also failed:', error);
+    return { 
+      success: false, 
+      error: 'Failed to send email via both Gmail API and SMTP',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    };
+  } finally {
+    if (transporter) {
+      transporter.close();
+    }
+  }
+};
+
 // Generate a 6-character alphanumeric verification code (mix of numbers and letters)
 export const generateVerificationCode = () => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -42,39 +171,28 @@ export const generateVerificationCode = () => {
   return code;
 };
 
-// Send verification email
+// Send verification email (RESTORED YOUR ORIGINAL FUNCTION WITH FALLBACK)
 export const sendVerificationEmail = async (email, code, name) => {
-  let transporter;
   try {
     // Validate email format
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new Error('Invalid email address format');
     }
 
-    // Create and verify transporter
-    transporter = createTransporter();
-    await transporter.verify();
-    console.log('SMTP server connection verified');
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Welcome to Workstream Automations, ${name}!</h2>
+        <p style="color: #666; font-size: 16px;">Thank you for registering. Please verify your email address to complete your registration.</p>
+        <div style="background-color: #f4f4f4; padding: 20px; border-radius: 5px; margin: 20px 0;">
+          <p style="margin: 0; color: #333; font-size: 14px;">Your verification code is:</p>
+          <h1 style="color: #4CAF50; font-size: 32px; margin: 10px 0; letter-spacing: 5px;">${code}</h1>
+        </div>
+        <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
+        <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request this verification, please ignore this email.</p>
+      </div>
+    `;
 
     const mailOptions = {
-      from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
-      host: 'smtp.gmail.com',
-      port: 587,
-      to: email,
-      secure: false,
-      subject: "Email Verification - Workstream Automations",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Welcome to Workstream Automations, ${name}!</h2>
-          <p style="color: #666; font-size: 16px;">Thank you for registering. Please verify your email address to complete your registration.</p>
-          <div style="background-color: #f4f4f4; padding: 20px; border-radius: 5px; margin: 20px 0;">
-            <p style="margin: 0; color: #333; font-size: 14px;">Your verification code is:</p>
-            <h1 style="color: #4CAF50; font-size: 32px; margin: 10px 0; letter-spacing: 5px;">${code}</h1>
-          </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
-          <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request this verification, please ignore this email.</p>
-        </div>
-      `,
       // Add headers to prevent email clients from marking as spam
       headers: {
         'X-LAZINESS': 'none',
@@ -91,16 +209,15 @@ export const sendVerificationEmail = async (email, code, name) => {
     };
 
     console.log('Sending verification email to:', email);
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully:', info.messageId);
+    const result = await sendEmailWithFallback(email, "Email Verification - Workstream Automations", htmlContent, mailOptions);
     
-    return { 
-      success: true,
-      messageId: info.messageId,
-      response: info.response
-    };
+    if (result.success) {
+      console.log(`Verification email sent successfully via ${result.method}:`, result.messageId);
+    }
+    
+    return result;
   } catch (error) {
-    console.log(  'Error details:====== 100', error);
+    console.log('Error details:====== 100', error);
     const errorDetails = {
       message: error.message,
       code: error.code,
@@ -129,45 +246,32 @@ export const sendVerificationEmail = async (email, code, name) => {
       error: userMessage,
       details: process.env.NODE_ENV === 'development' ? errorDetails : undefined
     };
-  } finally {
-    // Close the transporter connection if it was created
-    if (transporter) {
-      transporter.close();
-    }
   }
 };
 
-// Send password reset email
+// Send password reset email (RESTORED YOUR ORIGINAL FUNCTION WITH FALLBACK)
 export const sendPasswordResetEmail = async (email, code, name) => {
-  let transporter;
   try {
     // Validate email format
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new Error('Invalid email address format');
     }
 
-    // Create and verify transporter
-    transporter = createTransporter();
-    await transporter.verify();
-    console.log('SMTP server connection verified for password reset');
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Password Reset Request</h2>
+        <p style="color: #666; font-size: 16px;">Hello ${name},</p>
+        <p style="color: #666; font-size: 16px;">We received a request to reset your password. Use the code below to reset your password:</p>
+        <div style="background-color: #f4f4f4; padding: 20px; border-radius: 5px; margin: 20px 0;">
+          <p style="margin: 0; color: #333; font-size: 14px;">Your reset code is:</p>
+          <h1 style="color: #4CAF50; font-size: 32px; margin: 10px 0; letter-spacing: 5px;">${code}</h1>
+        </div>
+        <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
+        <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request a password reset, please ignore this email or contact support.</p>
+      </div>
+    `;
 
     const mailOptions = {
-      from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "Password Reset Request - Workstream Automations",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Password Reset Request</h2>
-          <p style="color: #666; font-size: 16px;">Hello ${name},</p>
-          <p style="color: #666; font-size: 16px;">We received a request to reset your password. Use the code below to reset your password:</p>
-          <div style="background-color: #f4f4f4; padding: 20px; border-radius: 5px; margin: 20px 0;">
-            <p style="margin: 0; color: #333; font-size: 14px;">Your reset code is:</p>
-            <h1 style="color: #4CAF50; font-size: 32px; margin: 10px 0; letter-spacing: 5px;">${code}</h1>
-          </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
-          <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request a password reset, please ignore this email or contact support.</p>
-        </div>
-      `,
       headers: {
         'X-LAZINESS': 'none',
         'X-Auto-Response-Suppress': 'OOF, AutoReply',
@@ -182,14 +286,13 @@ export const sendPasswordResetEmail = async (email, code, name) => {
     };
 
     console.log('Sending password reset email to:', email);
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Password reset email sent successfully:', info.messageId);
+    const result = await sendEmailWithFallback(email, "Password Reset Request - Workstream Automations", htmlContent, mailOptions);
     
-    return { 
-      success: true,
-      messageId: info.messageId,
-      response: info.response
-    };
+    if (result.success) {
+      console.log(`Password reset email sent successfully via ${result.method}:`, result.messageId);
+    }
+    
+    return result;
   } catch (error) {
     const errorDetails = {
       message: error.message,
@@ -219,19 +322,12 @@ export const sendPasswordResetEmail = async (email, code, name) => {
       error: userMessage,
       details: process.env.NODE_ENV === 'development' ? errorDetails : undefined
     };
-  } finally {
-    // Close the transporter connection if it was created
-    if (transporter) {
-      transporter.close();
-    }
   }
 };
 
-// Send appointment notification email
+// Send appointment notification email (RESTORED YOUR ORIGINAL FUNCTION WITH FALLBACK)
 export const sendAppointmentNotification = async (appointment, recipientEmail, recipientName) => {
   try {
-    const transporter = createTransporter();
-    
     // Format date and time
     const formattedDate = new Date(appointment.scheduledDate).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -246,48 +342,46 @@ export const sendAppointmentNotification = async (appointment, recipientEmail, r
       hour12: true
     });
 
-    const mailOptions = {
-      from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
-      to: recipientEmail,
-      subject: `New ${appointment.type} Scheduled - ${appointment.client.name}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eaeaea; border-radius: 8px; overflow: hidden;">
-          <div style="background-color: #3b3da0e3; padding: 15px; text-align: center; color: white;">
-            <h2 style="margin: 0; color: #ffffff;">Workstream Automations</h2>
-          </div>
-          
-          <div style="padding: 20px;">
-            <p style="font-size: 16px; color: #333;">Hello ${recipientName},</p>
-            <p style="color: #555;">A new <strong>${appointment.type}</strong> has been scheduled.</p>
-
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <p><strong>Client:</strong> ${appointment.client.name}</p>
-              <p><strong>Company:</strong> ${appointment.client.company || 'N/A'}</p>
-              <p><strong>Date:</strong> ${formattedDate}</p>
-              <p><strong>Time:</strong> ${formattedTime}</p>
-              ${appointment.notes ? `<p><strong>Notes:</strong> ${appointment.notes}</p>` : ''}
-            </div>
-
-            <p style="color: #666;">Best regards,<br>The Workstream Automations Team</p>
-            <p style="color: #999; font-size: 12px; margin-top: 20px;">© ${new Date().getFullYear()} Workstream Automations. All rights reserved.</p>
-          </div>
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eaeaea; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #3b3da0e3; padding: 15px; text-align: center; color: white;">
+          <h2 style="margin: 0; color: #ffffff;">Workstream Automations</h2>
         </div>
-      `,
-    };
+        
+        <div style="padding: 20px;">
+          <p style="font-size: 16px; color: #333;">Hello ${recipientName},</p>
+          <p style="color: #555;">A new <strong>${appointment.type}</strong> has been scheduled.</p>
 
-    await transporter.sendMail(mailOptions);
-    return { success: true };
+          <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Client:</strong> ${appointment.client.name}</p>
+            <p><strong>Company:</strong> ${appointment.client.company || 'N/A'}</p>
+            <p><strong>Date:</strong> ${formattedDate}</p>
+            <p><strong>Time:</strong> ${formattedTime}</p>
+            ${appointment.notes ? `<p><strong>Notes:</strong> ${appointment.notes}</p>` : ''}
+          </div>
+
+          <p style="color: #666;">Best regards,<br>The Workstream Automations Team</p>
+          <p style="color: #999; font-size: 12px; margin-top: 20px;">© ${new Date().getFullYear()} Workstream Automations. All rights reserved.</p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmailWithFallback(
+      recipientEmail, 
+      `New ${appointment.type} Scheduled - ${appointment.client.name}`, 
+      htmlContent
+    );
+    
+    return result;
   } catch (error) {
     console.error("Error sending appointment notification:", error);
     return { success: false, error: error.message };
   }
 };
 
-// Send recording notification email
+// Send recording notification email (RESTORED YOUR ORIGINAL FUNCTION WITH FALLBACK)
 export const sendRecordingNotification = async (recording, recipientEmail, recipientName) => {
   try {
-    const transporter = createTransporter();
-    
     const formattedDate = new Date(recording.createdAt).toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -304,46 +398,46 @@ export const sendRecordingNotification = async (recording, recipientEmail, recip
       return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
     };
 
-    const mailOptions = {
-      from: `"Workstream Automations" <${process.env.EMAIL_USER}>`,
-      to: recipientEmail,
-      subject: `New Recording: ${recording.title}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eaeaea; border-radius: 8px; overflow: hidden;">
-          <div style="background-color: #3b3da0e3; padding: 15px; text-align: center; color: white;">
-            <h2 style="margin: 0; color: #ffffff;">Workstream Automations</h2>
-          </div>
-          
-          <div style="padding: 20px;">
-            <p style="font-size: 16px; color: #333;">Hello ${recipientName},</p>
-            <p style="color: #555;">A new recording has been uploaded.</p>
-
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <p><strong>Title:</strong> ${recording.title}</p>
-              ${recording.description ? `<p><strong>Description:</strong> ${recording.description}</p>` : ""}
-              <p><strong>Duration:</strong> ${formatDuration(recording.audio.duration)}</p>
-              <p><strong>File Size:</strong> ${(recording.audio.fileSize / (1024 * 1024)).toFixed(2)} MB</p>
-              <p><strong>Uploaded:</strong> ${formattedDate}</p>
-              ${recording.clientName ? `<p><strong>Client:</strong> ${recording.clientName}</p>` : ""}
-              ${recording.clientCompany ? `<p><strong>Company:</strong> ${recording.clientCompany}</p>` : ""}
-            </div>
-
-            <div style="margin: 25px 0; text-align: center;">
-              <a href="${process.env.FRONTEND_URL || "https://your-app.com"}/recordings/${recording._id}" 
-                style="background-color: #3b3da0ab; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
-                View Recording
-              </a>
-            </div>
-
-            <p style="color: #666;">Best regards,<br>The Workstream Automations Team</p>
-            <p style="color: #999; font-size: 12px; margin-top: 20px;">© ${new Date().getFullYear()} Workstream Automations. All rights reserved.</p>
-          </div>
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eaeaea; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #3b3da0e3; padding: 15px; text-align: center; color: white;">
+          <h2 style="margin: 0; color: #ffffff;">Workstream Automations</h2>
         </div>
-      `,
-    };
+        
+        <div style="padding: 20px;">
+          <p style="font-size: 16px; color: #333;">Hello ${recipientName},</p>
+          <p style="color: #555;">A new recording has been uploaded.</p>
 
-    await transporter.sendMail(mailOptions);
-    return { success: true };
+          <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Title:</strong> ${recording.title}</p>
+            ${recording.description ? `<p><strong>Description:</strong> ${recording.description}</p>` : ""}
+            <p><strong>Duration:</strong> ${formatDuration(recording.audio.duration)}</p>
+            <p><strong>File Size:</strong> ${(recording.audio.fileSize / (1024 * 1024)).toFixed(2)} MB</p>
+            <p><strong>Uploaded:</strong> ${formattedDate}</p>
+            ${recording.clientName ? `<p><strong>Client:</strong> ${recording.clientName}</p>` : ""}
+            ${recording.clientCompany ? `<p><strong>Company:</strong> ${recording.clientCompany}</p>` : ""}
+          </div>
+
+          <div style="margin: 25px 0; text-align: center;">
+            <a href="${process.env.FRONTEND_URL || "https://your-app.com"}/recordings/${recording._id}" 
+              style="background-color: #3b3da0ab; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
+              View Recording
+            </a>
+          </div>
+
+          <p style="color: #666;">Best regards,<br>The Workstream Automations Team</p>
+          <p style="color: #999; font-size: 12px; margin-top: 20px;">© ${new Date().getFullYear()} Workstream Automations. All rights reserved.</p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmailWithFallback(
+      recipientEmail, 
+      `New Recording: ${recording.title}`, 
+      htmlContent
+    );
+    
+    return result;
   } catch (error) {
     console.error("Error sending recording notification:", error);
     return { success: false, error: error.message };

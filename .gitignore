@@ -1,6 +1,10 @@
 # Ignore node modules and dependencies
 node_modules/
-vendor/
+.env
+uploads/
+
+# Gmail API credentials - NEVER commit this file
+config/gmail-credentials.json
 
 # Ignore build outputs
 dist/
